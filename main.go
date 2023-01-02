@@ -1,23 +1,30 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 
+	"github.com/go-redis/redis/v8"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/gorilla/mux"
 	"github.com/spf13/viper"
 )
 
+type Claims struct {
+	Id string `json:"id"`
+	jwt.RegisteredClaims
+}
+
 var AUTH_PROXY *httputil.ReverseProxy
 
 type GatewayConfig struct {
-	ListenAddr string        `mapstructure:"listenAddr"`
-	Auth       ContextTarget `mapstructure:"auth"`
-	Routes     Routes        `mapstructure:"routes"`
+	ListenAddr string `mapstructure:"listenAddr"`
+	Routes     Routes `mapstructure:"services"`
 }
 
 type Routes struct {
@@ -30,10 +37,18 @@ type ContextTarget struct {
 	Target  string `mapstructure:"target"`
 }
 
+var rdb *redis.Client
+
 func main() {
-	viper.AddConfigPath(".")              // Viper looks here for the files.
-	viper.SetConfigType("yaml")           // Sets the format of the config file.
-	viper.SetConfigName("gateway.config") // Viper loads gateway.config.yaml
+	rdb = redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDIS_HOST") + ":" + os.Getenv("REDIS_PORT"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0, // use default DB
+	})
+
+	viper.AddConfigPath(".")            // Viper looks here for the files.
+	viper.SetConfigType("yaml")         // Sets the format of the config file.
+	viper.SetConfigName("gateway.conf") // Viper loads gateway.config.yaml
 	err := viper.ReadInConfig()
 	if err != nil {
 		log.Fatalf("Warning could not load configuration: %v", err)
@@ -53,16 +68,16 @@ func main() {
 
 	r := mux.NewRouter()
 
-	// Reserve auth route
-	authProxy, err := NewProxy(gatewayConfig.Auth.Target)
-	if err != nil {
-		panic(err)
-	}
+	// // Reserve auth route
+	// authProxy, err := NewProxy(gatewayConfig.Auth.Target)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Used to check if the request is authorised
-	AUTH_PROXY = authProxy
+	// AUTH_PROXY = authProxy
 
-	r.HandleFunc(gatewayConfig.Auth.Context+"/{authPath:.*}", NewNonProtectedHandler(authProxy))
+	// r.HandleFunc(gatewayConfig.Auth.Context+"/{authPath:.*}", NewNonProtectedHandler(authProxy))
 
 	// Register non-protected routes
 	for _, route := range gatewayConfig.Routes.NonAuthenticated {
@@ -149,17 +164,69 @@ func NewProtectedHandler(p *httputil.ReverseProxy) func(http.ResponseWriter, *ht
 // query the auth service
 // make a call to the auth service
 // if the request is authorised return the user id
+// func isAuth(r *http.Request) (int, string) {
+// 	// Cache original path before updating to isAuth path
+// 	cachePath := r.URL.Path
+
+// 	r.URL.Path = "/isAuth"
+
+// 	w := httptest.NewRecorder() // record response writer
+
+// 	AUTH_PROXY.ServeHTTP(w, r)
+
+// 	r.URL.Path = cachePath // change back path to original before continuing with route handling
+
+// 	return w.Code, w.Body.String()
+// }
+
+// TODO: Verify user ID is still active/valid by crosschecking with DB
 func isAuth(r *http.Request) (int, string) {
-	// Cache original path before updating to isAuth path
-	cachePath := r.URL.Path
+	// We can obtain the session token from the requests cookies, which come with every request
+	c, err := r.Cookie("token")
+	if err != nil {
+		if err == http.ErrNoCookie {
+			// If the cookie is not set, return an unauthorized status
+			// w.WriteHeader(http.StatusUnauthorized)
+			return http.StatusUnauthorized, ""
+		}
+		// For any other type of error, return a bad request status
+		return http.StatusBadRequest, ""
+	}
 
-	r.URL.Path = "/isAuth"
+	// Get the JWT string from the cookie
+	tknStr := c.Value
 
-	w := httptest.NewRecorder() // record response writer
+	// Initialize a new instance of `Claims`
+	claims := &Claims{}
 
-	AUTH_PROXY.ServeHTTP(w, r)
+	// Parse the JWT string and store the result in `claims`.
+	// Note that we are passing the key in this method as well. This method will return an error
+	// if the token is invalid (if it has expired according to the expiry time we set on sign in),
+	// or if the signature does not match
+	tkn, err := jwt.ParseWithClaims(tknStr, claims, func(token *jwt.Token) (interface{}, error) {
+		return os.Getenv("JWT_SECRET_KEY"), nil
+	})
+	if err != nil {
+		if err == jwt.ErrSignatureInvalid {
+			return http.StatusUnauthorized, ""
+		}
+		return http.StatusBadRequest, ""
+	}
+	if !tkn.Valid {
+		return http.StatusUnauthorized, ""
+	}
 
-	r.URL.Path = cachePath // change back path to original before continuing with route handling
-
-	return w.Code, w.Body.String()
+	// Check if authenticated entity is active/valid (authorised)
+	_, redErr := rdb.Get(context.Background(), claims.Id).Result()
+	if redErr == redis.Nil {
+		fmt.Println("key2 does not exist")
+		// then has NOT been blacklisted
+		// Finally, return the welcome message to the user, along with their
+		// username given in the token
+		return http.StatusOK, claims.Id
+	} else if err != nil {
+		return http.StatusInternalServerError, ""
+	} else {
+		return http.StatusUnauthorized, ""
+	}
 }

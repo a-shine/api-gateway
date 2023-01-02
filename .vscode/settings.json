@@ -1,5 +1,6 @@
 {
     "editor.formatOnSave": true,
+    "editor.wordWrap": "off",
     "editor.rulers": [
         80,
     ]
