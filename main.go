@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -23,18 +22,19 @@ type Claims struct {
 var AUTH_PROXY *httputil.ReverseProxy
 
 type GatewayConfig struct {
-	ListenAddr string `mapstructure:"listenAddr"`
-	Routes     Routes `mapstructure:"services"`
+	ListenAddr string   `mapstructure:"listenAddr"`
+	Services   Services `mapstructure:"services"`
 }
 
-type Routes struct {
-	NonAuthenticated []ContextTarget `mapstructure:"non-authenticated"`
-	Authenticated    []ContextTarget `mapstructure:"authenticated"`
+type Services struct {
+	NonAuthenticated []Service `mapstructure:"non-authenticated"`
+	Authenticated    []Service `mapstructure:"authenticated"`
 }
 
-type ContextTarget struct {
-	Context string `mapstructure:"context"`
-	Target  string `mapstructure:"target"`
+type Service struct {
+	Name   string `mapstructure:"name"`
+	Route  string `mapstructure:"route"`
+	Target string `mapstructure:"target"`
 }
 
 var rdb *redis.Client
@@ -62,49 +62,36 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Println(gatewayConfig)
-
 	log.Println("Initializing routes...")
 
 	r := mux.NewRouter()
 
-	// // Reserve auth route
-	// authProxy, err := NewProxy(gatewayConfig.Auth.Target)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// Used to check if the request is authorised
-	// AUTH_PROXY = authProxy
-
-	// r.HandleFunc(gatewayConfig.Auth.Context+"/{authPath:.*}", NewNonProtectedHandler(authProxy))
-
 	// Register non-protected routes
-	for _, route := range gatewayConfig.Routes.NonAuthenticated {
+	for _, service := range gatewayConfig.Services.NonAuthenticated {
 		// Returns a proxy for the target url.
-		serviceProxy, err := NewProxy(route.Target)
+		serviceProxy, err := NewProxy(service.Target)
 		if err != nil {
 			panic(err)
 		}
 		// Just logging the mapping.
-		log.Printf("Mapping %v ---> %v", route.Context, route.Target)
+		log.Printf("Mapping %v service from %v ---> %v", service.Name, service.Route, service.Target)
 		// Maps the HandlerFunc fn returned by NewHandler() fn
 		// that delegates the requests to the proxy.
-		r.HandleFunc(route.Context+"/{servicePath:.*}", NewNonProtectedHandler(serviceProxy))
+		r.HandleFunc(service.Route+"/{servicePath:.*}", NewNonProtectedHandler(serviceProxy))
 	}
 
 	// Register protected routes
-	for _, route := range gatewayConfig.Routes.Authenticated {
+	for _, service := range gatewayConfig.Services.Authenticated {
 		// Returns a proxy for the target url.
-		serviceProxy, err := NewProxy(route.Target)
+		serviceProxy, err := NewProxy(service.Target)
 		if err != nil {
 			panic(err)
 		}
 		// Just logging the mapping.
-		log.Printf("Mapping %v ---> %v", route.Context, route.Target)
+		log.Printf("Mapping %v service from %v ---> %v", service.Name, service.Route, service.Target)
 		// Maps the HandlerFunc fn returned by NewHandler() fn
 		// that delegates the requests to the proxy.
-		r.HandleFunc(route.Context+"/{servicePath:.*}", NewProtectedHandler(serviceProxy))
+		r.HandleFunc(service.Route+"/{servicePath:.*}", NewProtectedHandler(serviceProxy))
 	}
 
 	log.Printf("Started server on %v", gatewayConfig.ListenAddr)
@@ -137,7 +124,7 @@ func enableCors(w *http.ResponseWriter) {
 func NewNonProtectedHandler(p *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		enableCors(&w)
-		r.URL.Path = mux.Vars(r)["authPath"]
+		r.URL.Path = mux.Vars(r)["servicePath"]
 		log.Println("Request URL: ", r.URL.String())
 		p.ServeHTTP(w, r)
 	}
@@ -159,25 +146,6 @@ func NewProtectedHandler(p *httputil.ReverseProxy) func(http.ResponseWriter, *ht
 		}
 	}
 }
-
-// isAuth queries the authentication service and checks if the request is authorised, if it is returns the requester's ID
-// query the auth service
-// make a call to the auth service
-// if the request is authorised return the user id
-// func isAuth(r *http.Request) (int, string) {
-// 	// Cache original path before updating to isAuth path
-// 	cachePath := r.URL.Path
-
-// 	r.URL.Path = "/isAuth"
-
-// 	w := httptest.NewRecorder() // record response writer
-
-// 	AUTH_PROXY.ServeHTTP(w, r)
-
-// 	r.URL.Path = cachePath // change back path to original before continuing with route handling
-
-// 	return w.Code, w.Body.String()
-// }
 
 // TODO: Verify user ID is still active/valid by crosschecking with DB
 func isAuth(r *http.Request) (int, string) {
