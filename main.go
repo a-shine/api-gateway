@@ -219,7 +219,6 @@ func isAuth(r *http.Request) (int, string) {
 	// Check if authenticated entity is active/valid (authorised)
 	_, redErr := rdb.Get(context.Background(), claims.Id).Result()
 	if redErr == redis.Nil {
-		fmt.Println("key2 does not exist")
 		// then has NOT been blacklisted
 		// Finally, return the welcome message to the user, along with their
 		// username given in the token
