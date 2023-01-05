@@ -15,5 +15,6 @@ services:
     image: redis
     ports:
       - 6379:6379
+    command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
     environment:
       - REDIS_PASSWORD=password123

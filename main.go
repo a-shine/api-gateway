@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -39,12 +40,37 @@ type Service struct {
 
 var rdb *redis.Client
 
+func listenForUserDeletion() {
+	// There is no error because go-redis automatically reconnects on error.
+	pubsub := rdb.Subscribe(context.Background(), "user-delete")
+
+	// Close the subscription when we are done.
+	defer pubsub.Close()
+
+	// Wait for confirmation that subscription is created before publishing anything.
+	// _, err := pubsub.Receive(context.TODO())
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// Go channel which receives messages.
+	ch := pubsub.Channel()
+
+	// Consume messages.
+	for msg := range ch {
+		fmt.Println("I'm here")
+		log.Printf(msg.Channel, msg.Payload)
+	}
+}
+
 func main() {
 	rdb = redis.NewClient(&redis.Options{
 		Addr:     os.Getenv("REDIS_HOST") + ":" + os.Getenv("REDIS_PORT"),
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       0, // use default DB
 	})
+
+	go listenForUserDeletion()
 
 	viper.AddConfigPath(".")            // Viper looks here for the files.
 	viper.SetConfigType("yaml")         // Sets the format of the config file.
@@ -74,7 +100,7 @@ func main() {
 			panic(err)
 		}
 		// Just logging the mapping.
-		log.Printf("Mapping %v service from %v ---> %v", service.Name, service.Route, service.Target)
+		log.Printf("Mapping '%v' service from %v ---> %v", service.Name, service.Route, service.Target)
 		// Maps the HandlerFunc fn returned by NewHandler() fn
 		// that delegates the requests to the proxy.
 		r.HandleFunc(service.Route+"/{servicePath:.*}", NewNonProtectedHandler(serviceProxy))
@@ -88,7 +114,7 @@ func main() {
 			panic(err)
 		}
 		// Just logging the mapping.
-		log.Printf("Mapping %v service from %v ---> %v", service.Name, service.Route, service.Target)
+		log.Printf("Mapping '%v' service from %v ---> %v", service.Name, service.Route, service.Target)
 		// Maps the HandlerFunc fn returned by NewHandler() fn
 		// that delegates the requests to the proxy.
 		r.HandleFunc(service.Route+"/{servicePath:.*}", NewProtectedHandler(serviceProxy))
