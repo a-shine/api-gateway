@@ -1,5 +1,7 @@
 # A very simple API Gateway with JWT authentication
 
+![Simple API Gateway diagram](https://raw.githubusercontent.com/a-shine/api-gateway/main/api-gateway.drawio.svg)
+
 ## Introducing API Gateways
 
 An API gateway is a reverse proxy server which is a type of proxy server that typically sits behind the firewall in a 
