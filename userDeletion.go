@@ -30,19 +30,24 @@ func listenForUserDeletion() {
 	for msg := range ch {
 		// log.Printf(msg.Channel, msg.Payload)
 		// Make call to each authenticated service to delete the user data
-		for _, service := range proxies.authenticated {
-			req, _ := http.NewRequest("DELETE", "/user-delete", nil)
+		for _, service := range serviceProxies {
+			if service.Authenticated {
 
-			// Assume the user ID is the message payload
-			req.Header.Set("id", msg.Payload)
+				req, _ := http.NewRequest("DELETE", "/user-delete", nil)
 
-			// http response writer
-			w := httptest.NewRecorder()
+				// Assume the user ID is the message payload
+				req.Header.Set("id", msg.Payload)
 
-			service.ServeHTTP(w, req)
+				// http response writer
+				w := httptest.NewRecorder()
 
-			// TODO: Handle a failed user deletion
-			log.Printf("Response: %v", w.Result())
+				service.ServeHTTP(w, req)
+
+				// TODO: Handle a failed user deletion
+				log.Printf("Response: %v", w.Result())
+			} else {
+				log.Println("Service is not authenticated: ", service.Name)
+			}
 		}
 	}
 }

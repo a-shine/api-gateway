@@ -6,7 +6,7 @@ import (
 )
 
 func isAuth(w http.ResponseWriter, r *http.Request) {
-	status, body := authenticate(r)
+	status, body := authenticateAndAuthorise(r)
 	switch status {
 	case 200:
 		// r.Header.Set("auth_id", body) // append the user id to the header of the request to be sent to the services

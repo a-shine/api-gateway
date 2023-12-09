@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
+	"net/http"
+
 	"github.com/go-redis/redis/v8"
 	"github.com/golang-jwt/jwt/v4"
-	"net/http"
 )
 
 type Claims struct {
-	Id string `json:"id"`
+	Id        string `json:"id"`
+	UserGroup string `json:"userGroup"`
 	jwt.RegisteredClaims
 }
 
@@ -16,7 +18,41 @@ type Claims struct {
 // the cookies is missing/invalid, token incorrect/invalid or user has been blacklisted, the request is rejected with
 // the appropriate status code and a JSON formatted error message are returned. Else a 200 (Status OK) code is returned
 // with the user ID string.
-func authenticate(r *http.Request) (int, string) {
+
+func authorize(claims *Claims, allowedGroups []string) (int, string) {
+	// Check if authenticated entity is active/valid (authorised)
+	_, redErr := rdb.Get(context.Background(), claims.Id).Result()
+	if redErr != nil {
+		if redErr == redis.Nil {
+			// then has NOT been blacklisted
+			// Finally, return the welcome message to the user, along with their
+			// username given in the token
+			// if claim user group is in the allowed groups, then return 200
+			// else return 403
+			if contains(allowedGroups, claims.UserGroup) {
+				return http.StatusOK, claims.Id
+			} else {
+				return http.StatusForbidden, `{"message":"User is not authorised to access this resource"}`
+			}
+		}
+		return http.StatusInternalServerError, `{"message":"Failed to check user authorisation"}`
+	} else {
+		return http.StatusUnauthorized, `{"message":"User has been suspended"}`
+	}
+
+}
+
+func contains(groups []string, group string) bool {
+	for _, g := range groups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+func authenticateAndAuthorise(r *http.Request, allowedGroups []string) (int, string) {
+	// Process token/authenticate
 	// We can obtain the token from the requests cookies, which come with every request
 	c, err := r.Cookie("token")
 	if err != nil {
@@ -52,17 +88,6 @@ func authenticate(r *http.Request) (int, string) {
 		return http.StatusUnauthorized, `{"message":"Invalid or expired token"}`
 	}
 
-	// Check if authenticated entity is active/valid (authorised)
-	_, redErr := rdb.Get(context.Background(), claims.Id).Result()
-	if redErr != nil {
-		if redErr == redis.Nil {
-			// then has NOT been blacklisted
-			// Finally, return the welcome message to the user, along with their
-			// username given in the token
-			return http.StatusOK, claims.Id
-		}
-		return http.StatusInternalServerError, `{"message":"Failed to check user authorisation"}`
-	} else {
-		return http.StatusUnauthorized, `{"message":"User has been suspended"}`
-	}
+	// Check if id has been blacklisted + check if user group is correct for request (authorises)
+	return authorize(claims, allowedGroups)
 }

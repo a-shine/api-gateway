@@ -23,15 +23,15 @@ var redisPassword = os.Getenv("REDIS_PASSWORD")
 
 // Package level variables
 var gatewayConfig *GatewayConfig
-var proxies *Proxies  // Holds the proxies for the non-authenticated and authenticated services
+var serviceProxies []*httputil.ReverseProxy
 var rdb *redis.Client // Redis client
 var rdbContext = context.Background()
 
 // GatewayConfig is the top level struct for the gateway configuration
 type GatewayConfig struct {
-	ListenAddr string   `mapstructure:"listenAddr"`
-	Cors       Cors     `mapstructure:"cors"`
-	Services   Services `mapstructure:"services"`
+	ListenAddr string    `mapstructure:"listenAddr"`
+	Cors       Cors      `mapstructure:"cors"`
+	Services   []Service `mapstructure:"services"`
 }
 
 type Cors struct {
@@ -43,23 +43,19 @@ type Cors struct {
 }
 
 // Services holds the array of non-authenticated and authenticated services
-type Services struct {
-	NonAuthenticated []Service `mapstructure:"non-authenticated" `
-	Authenticated    []Service `mapstructure:"authenticated"`
-}
+//type Services struct {
+//	NonAuthenticated []Service `mapstructure:"non-authenticated" `
+//	Authenticated    []Service `mapstructure:"authenticated"`
+//}
 
 // Service defines what a service looks like to the gateway. The name can be useful for logging purposes but at a
 // minimum the route and target are required.
 type Service struct {
-	Name   string `mapstructure:"name"`
-	Route  string `mapstructure:"route"`
-	Target string `mapstructure:"target"`
-}
-
-// Proxies is similar to the Services struct but holds the actual proxies instead of the service definitions
-type Proxies struct {
-	nonAuthenticated []*httputil.ReverseProxy
-	authenticated    []*httputil.ReverseProxy
+	Name          string   `mapstructure:"name"`
+	Route         string   `mapstructure:"route"`
+	Target        string   `mapstructure:"target"`
+	Authenticated bool     `mapstructure:"authenticated"`
+	AllowedGroups []string `mapstructure:"allowedGroups"`
 }
 
 func main() {
@@ -111,10 +107,10 @@ func main() {
 		r.Use(appendCors)
 	}
 
-	proxies = &Proxies{}
+	//proxies = &Proxies{}
 
-	// Register non-protected routes
-	for _, service := range gatewayConfig.Services.NonAuthenticated {
+	// Create and register service proxies
+	for _, service := range gatewayConfig.Services {
 		// Returns a proxy for the target url
 		serviceProxy, err := newProxy(service.Target)
 		if err != nil {
@@ -122,29 +118,16 @@ func main() {
 		}
 
 		// Append the proxy to the list of non-authenticated proxies
-		proxies.nonAuthenticated = append(proxies.nonAuthenticated, serviceProxy)
+		serviceProxies = append(serviceProxies, serviceProxy)
 
 		log.Printf("Mapping '%v' service from %v ---> %v", service.Name, service.Route, service.Target)
 
 		// Maps the HandlerFunc fn returned by NewHandler() fn that delegates the requests to the proxy
-		r.HandleFunc(service.Route+"/{servicePath:.*}", newNonProtectedHandler(serviceProxy))
-	}
-
-	// Register protected routes
-	for _, service := range gatewayConfig.Services.Authenticated {
-		// Returns a proxy for the target url
-		serviceProxy, err := newProxy(service.Target)
-		if err != nil {
-			log.Fatalf("Warning could not create proxy for service %s: %v", service.Name, err)
+		if service.Authenticated {
+			r.Handle(service.Route, http.HandlerFunc(newProtectedHandler(serviceProxy, service.AllowedGroups)))
+		} else {
+			r.Handle(service.Route, http.HandlerFunc(newNonProtectedHandler(serviceProxy)))
 		}
-
-		// Append the proxy to the list of authenticated proxies
-		proxies.authenticated = append(proxies.authenticated, serviceProxy)
-
-		log.Printf("Mapping '%v' service from %v ---> %v", service.Name, service.Route, service.Target)
-
-		// Maps the HandlerFunc fn returned by NewHandler() fn that delegates the requests to the proxy
-		r.HandleFunc(service.Route+"/{servicePath:.*}", newProtectedHandler(serviceProxy))
 	}
 
 	// Register the default '/isAuth' route which checks if the request of a user is authenticated
@@ -190,12 +173,14 @@ func newNonProtectedHandler(p *httputil.ReverseProxy) func(http.ResponseWriter, 
 
 // newProtectedHandler returns a HandlerFunc that delegates the request to the proxy. The proxy is chosen based on the
 // service path. The request is authenticated before being delegated to the proxy.
-func newProtectedHandler(p *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
+func newProtectedHandler(p *httputil.ReverseProxy, allowedGroups []string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = mux.Vars(r)["servicePath"]
 		log.Println("Request URL: ", r.URL.String())
 		// Check if request is authenticated
-		status, body := authenticate(r)
+		// TODO: get the service groups
+		status, body := authenticateAndAuthorise(r, allowedGroups)
+		//status, body := authenticate(r)
 		switch status {
 		case 200:
 			// Request is authenticated
